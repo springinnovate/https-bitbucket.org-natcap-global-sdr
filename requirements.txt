@@ -1,2 +1,4 @@
 gdal
 taskgraph
+pygeoprocessing
+rtree
