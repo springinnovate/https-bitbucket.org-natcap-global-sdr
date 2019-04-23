@@ -1,4 +1,5 @@
 """Script to run a global SDR analysis."""
+import glob
 import urllib
 import shutil
 import re
@@ -9,15 +10,14 @@ import zipfile
 import logging
 import sys
 
-from osgeo import gdal
-import natcap.invest.sdr
 import taskgraph
 
 
 WORKSPACE_DIR = 'workspace'
 CHURN_DIR = os.path.join(WORKSPACE_DIR, 'churn')
+ECOSHARD_DIR = os.path.join(CHURN_DIR, 'ecoshards')
 
-N_CPUS = -1
+N_CPUS = 4
 TASKGRAPH_REPORTING_FREQUENCY = 5.0
 
 logging.basicConfig(
@@ -28,12 +28,18 @@ logging.basicConfig(
     stream=sys.stdout)
 LOGGER = logging.getLogger(__name__)
 
-LULC_URL = r''
+EROSIVITY_URL = r'https://storage.googleapis.com/global-invest-sdr-data/erosivity_CIAT_50km_md5_8e0d84d5736d118e111b8ee0ded65358.tif'
+ERODIBILITY_URL = r'https://storage.googleapis.com/global-invest-sdr-data/erodibility_globe_ISRIC_30arcseconds_md5_e3f8961b77539b686deb9a3d04ee4ce3.tif'
+LULC_URL = r'https://storage.googleapis.com/ipbes-ndr-ecoshard-data/ESACCI-LC-L4-LCCS-Map-300m-P1Y-2015-v2.0.7_md5_1254d25f937e6d9bdee5779d377c5aa4.tif'
+DEM_URL = r'https://storage.googleapis.com/global-invest-sdr-data/global_dem_3s_md5_22d0c3809af491fa09d03002bdf09748.zip'
+WATERSHEDS_URL = r'https://storage.googleapis.com/global-invest-sdr-data/watersheds_globe_HydroSHEDS_15arcseconds_md5_c6acf2762123bbd5de605358e733a304.zip'
+BIOPHYSICAL_TABLE_URL = r'https://storage.googleapis.com/global-invest-sdr-data/Biophysical_table_ESA_ARIES_RS_md5_e16587ebe01db21034ef94171c76c463.csv'
+
 
 def main():
     """Entry point."""
     for dir_path in [
-            WORKSPACE_DIR, CHURN_DIR]:
+            WORKSPACE_DIR, CHURN_DIR, ECOSHARD_DIR]:
         try:
             os.makedirs(dir_path)
         except OSError:
@@ -43,15 +49,60 @@ def main():
         os.path.join(WORKSPACE_DIR, 'taskgraph_cache'), N_CPUS,
         TASKGRAPH_REPORTING_FREQUENCY)
 
-    lulc_token_path = os.path.join(f'{os.path.basename(LULC_URL)}.COMPLETE')
+    lulc_path = os.path.join(ECOSHARD_DIR, os.path.basename(LULC_URL))
     fetch_lulc_task = task_graph.add_task(
-        n_retries=5,
-        func=download_validate_and_unzip,
-        args=(LULC_URL, CHURN_DIR, lulc_token_path),
-        target_path_list=[lulc_token_path],
-        task_name='fetch esacci landuse')
+        func=url_fetch_and_validate,
+        args=(LULC_URL, lulc_path),
+        target_path_list=[lulc_path],
+        task_name='fetch lulc raster')
 
-    task_graph.join()
+    erosivity_path = os.path.join(
+        ECOSHARD_DIR, os.path.basename(EROSIVITY_URL))
+    fetch_erosivity_task = task_graph.add_task(
+        func=url_fetch_and_validate,
+        args=(EROSIVITY_URL, erosivity_path),
+        target_path_list=[erosivity_path],
+        task_name='fetch erosivity raster')
+
+    erodibility_path = os.path.join(
+        ECOSHARD_DIR, os.path.basename(ERODIBILITY_URL))
+    fetch_erodibility_task = task_graph.add_task(
+        func=url_fetch_and_validate,
+        args=(ERODIBILITY_URL, erodibility_path),
+        target_path_list=[erodibility_path],
+        task_name='fetch erodibility raster')
+
+    biophysical_table_path = os.path.join(
+        ECOSHARD_DIR, os.path.basename(BIOPHYSICAL_TABLE_URL))
+    fetch_biophysical_table_task = task_graph.add_task(
+        func=url_fetch_and_validate,
+        args=(BIOPHYSICAL_TABLE_URL, biophysical_table_path),
+        target_path_list=[biophysical_table_path],
+        task_name='fetch biophysical_table raster')
+
+    dem_token_path = os.path.join(
+        ECOSHARD_DIR, '%s.COMPLETE' % os.path.basename(DEM_URL))
+    fetch_dem_task = task_graph.add_task(
+        func=download_validate_and_unzip,
+        args=(DEM_URL, ECOSHARD_DIR, dem_token_path),
+        target_path_list=[dem_token_path],
+        task_name='fetch dem raster')
+
+    watersheds_token_path = os.path.join(
+        ECOSHARD_DIR, '%s.COMPLETE' % os.path.basename(WATERSHEDS_URL))
+    fetch_watersheds_task = task_graph.add_task(
+        func=download_validate_and_unzip,
+        args=(WATERSHEDS_URL, ECOSHARD_DIR, watersheds_token_path),
+        target_path_list=[watersheds_token_path],
+        task_name='fetch watersheds shapefile')
+
+    fetch_watersheds_task.join()
+
+    for watershed_path in glob.glob(os.path.join(
+            ECOSHARD_DIR, 'watersheds_globe_HydroSHEDS_15arcseconds',
+            '*.shp')):
+        LOGGER.debug(watershed_path)
+
     task_graph.close()
 
 
@@ -169,16 +220,6 @@ def hash_file(file_path, hash_algorithm, buf_size=2**20):
             hash_func.update(binary_data)
             binary_data = f.read(buf_size)
     return hash_func.hexdigest()[:32]
-
-
-def add_nodata_value(base_raster_path, nodata_value):
-    """Set the given nodata value to the raster."""
-    raster = gdal.OpenEx(base_raster_path, gdal.OF_RASTER | gdal.GA_Update)
-    band = raster.GetRasterBand(1)
-    band.SetNoDataValue(nodata_value)
-    band.FlushCache()
-    band = None
-    raster = None
 
 
 if __name__ == '__main__':
