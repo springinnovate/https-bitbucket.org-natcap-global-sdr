@@ -1,4 +1,5 @@
 """Script to run a global SDR analysis."""
+import math
 import glob
 import urllib
 import shutil
@@ -10,7 +11,10 @@ import zipfile
 import logging
 import sys
 
+import natcap.invest.sdr
+from osgeo import ogr
 from osgeo import gdal
+from osgeo import osr
 import pygeoprocessing
 import taskgraph
 import rtree.index
@@ -19,7 +23,7 @@ import pickle
 # set a 1GB limit for the cache
 gdal.SetCacheMax(2**30)
 
-WORKSPACE_DIR = 'workspace'
+WORKSPACE_DIR = 'workspace_global_sdr_dir'
 CHURN_DIR = os.path.join(WORKSPACE_DIR, 'churn')
 ECOSHARD_DIR = os.path.join(CHURN_DIR, 'ecoshards')
 
@@ -103,17 +107,14 @@ def main():
         target_path_list=[watersheds_token_path],
         task_name='fetch watersheds shapefile')
 
-    dem_path_dir = os.path.join(ECOSHARD_DIR, 'global_dem_3s')
-    dem_path_index_map_path = os.path.join(
-        CHURN_DIR, 'dem_rtree_path_index_map.dat')
-    build_dem_rtree_task = task_graph.add_task(
-        func=build_raster_rtree,
-        args=(dem_path_dir, dem_path_index_map_path, DEM_RTREE_PATH),
-        target_path_list=[
-            DEM_RTREE_PATH+'.dat',  # rtree adds a ".dat" file
-            dem_path_index_map_path],
-        dependent_task_list=[fetch_dem_task],
-        task_name='build dem rtree')
+    dem_vrt_path = os.path.join(CHURN_DIR, 'global_dem.vrt')
+    dem_vrt_token_path = os.path.join(
+        CHURN_DIR, '%s.COMPLETE' % os.path.basename(dem_vrt_path))
+    make_dem_task = task_graph.add_task(
+        func=make_vrt,
+        args=(base_raster_path_list, dem_vrt_path, dem_vrt_token_path),
+        target_path_list=[dem_vrt_token_path],
+        task_name='make dem vrt')
 
     task_graph.join()
     scheduled_watershed_prefixes = set()
@@ -129,6 +130,7 @@ def main():
         for watershed_feature in watershed_layer:
             watershed_fid = watershed_feature.GetFID()
             ws_prefix = 'ws_%s_%d' % (watershed_basename, watershed_fid)
+            LOGGER.debug('processing %s', ws_prefix)
             if ws_prefix in scheduled_watershed_prefixes:
                 raise ValueError('%s has already been scheduled', ws_prefix)
             scheduled_watershed_prefixes.add(ws_prefix)
@@ -138,6 +140,70 @@ def main():
             if watershed_area < 0.0:
                 continue
 
+            # make a few subdirectories so we don't explode on number of files per
+            # directory. The largest watershed is 726k
+            last_digits = '%.4d' % watershed_fid
+            local_workspace_dir = os.path.join(
+                WORKSPACE_DIR, last_digits[-1], last_digits[-2],
+                last_digits[-3], last_digits[-4],
+                "%s_working_dir" % ws_prefix)
+            if not os.path.exists(local_workspace_dir):
+                os.makedirs(local_workspace_dir)
+
+            # find EPSG code and pass that/modify SDR for it
+            centroid_geom = watershed_geom.Centroid()
+            utm_code = (math.floor((centroid_geom.GetX() + 180)/6) % 60) + 1
+            lat_code = 6 if centroid_geom.GetY() > 0 else 7
+            epsg_code = int('32%d%02d' % (lat_code, utm_code))
+            epsg_srs = osr.SpatialReference()
+            epsg_srs.ImportFromEPSG(epsg_code)
+
+            wgs84_srs = osr.SpatialReference()
+            wgs84_srs.ImportFromEPSG(4326)
+            wgs84_to_utm = osr.CoordinateTransformation(wgs84_srs, epsg_srs)
+
+            # clip out watershed to its own file
+            # create a new shapefile
+            watershed_vector_path = os.path.join(
+                local_workspace_dir, '%s.gpkg' % ws_prefix)
+            if os.path.exists(watershed_vector_path):
+                os.remove(watershed_vector_path)
+            driver = gdal.GetDriverByName('GPKG')
+            watershed_vector = driver.Create(
+                watershed_vector_path, 0, 0, 0, gdal.GDT_Unknown)
+            watershed_layer = watershed_vector.CreateLayer(
+                os.path.splitext(os.path.basename(watershed_vector_path))[0],
+                epsg_srs, ogr.wkbPolygon)
+            watershed_feature = ogr.Feature(watershed_layer.GetLayerDefn())
+
+            watershed_geom.Transform(wgs84_to_utm)
+            watershed_feature.SetGeometry(watershed_geom)
+            watershed_layer.AddFeature(watershed_feature)
+            watershed_layer.SyncToDisk()
+            watershed_geom = None
+            watershed_feature = None
+            watershed_layer = None
+            watershed_vector = None
+
+            # call SDR?
+            sdr_args = {
+                'workspace_dir': local_workspace_dir,
+                'results_suffix': ws_prefix,
+                'dem_path': dem_vrt_path,
+                'erosivity_path': erosivity_path,
+                'erodibility_path': erodibility_path,
+                'lulc_path': lulc_path,
+                'watersheds_path': watershed_vector_path,
+                'biophysical_table_path': biophysical_table_path,
+                'threshold_flow_accumulation': 1000,
+                'k_param': '2',
+                'sdr_max': '0.8',
+                'ic_0_param': '0.5',
+                'local_projection_epsg': epsg_code
+            }
+            natcap.invest.sdr.execute(sdr_args)
+
+            break
     task_graph.close()
     task_graph.join()
 
@@ -262,37 +328,28 @@ def hash_file(file_path, hash_algorithm, buf_size=2**20):
     return hash_func.hexdigest()[:32]
 
 
-def build_raster_rtree(
-        raster_dir_path, raster_path_index_map_path, raster_rtree_path):
-    """Build RTree for list of rasters if RTree does not exist.
+def make_vrt(
+        base_raster_path_list, target_raster_path,
+        target_dem_vrt_token_path):
+    """Make a VRT given a list of files.
 
-    If the RTree already exists, this function logs a warning and returns.
-
-    Paramters:
-        raster_dir_path (str): path to a directory of GIS rasters.
-        raster_path_index_map_path (str): this is a path to a pickle file
-            generated by this function that will index RTree indexes to
-            the rasters on disk that will intersect the RTree.
-        raster_rtree_path (str): this is the target path to the saved rTree
-            generated by this call.
+    Parameters:
+        base_raster_path_list (list): list of raster paths to construct into
+            the VRT.
+        target_raster_path (str): path to desired target vrt
+        target_dem_vrt_token_path (str): path to a file to write when
+            complete.
 
     Returns:
         None.
+
     """
-    LOGGER.info('building rTree %s', raster_rtree_path+'.dat')
-    if os.path.exists(raster_rtree_path+'.dat'):
-        LOGGER.warn('%s exists so skipping rTree creation.', raster_rtree_path)
-        return
-    raster_rtree = rtree.index.Index(raster_rtree_path)
-    raster_path_index_map = {}
-    raster_path_list = glob.glob(os.path.join(raster_dir_path, '*.tif'))
-    for raster_id, raster_path in enumerate(raster_path_list):
-        raster_info = pygeoprocessing.get_raster_info(raster_path)
-        raster_path_index_map[raster_id] = raster_path
-        raster_rtree.insert(raster_id, raster_info['bounding_box'])
-    raster_rtree.close()
-    with open(raster_path_index_map_path, 'wb') as f:
-        pickle.dump(raster_path_index_map, f)
+    vrt_options = gdal.BuildVRTOptions(
+        VRTNodata=target_nodata)
+    gdal.BuildVRT(
+        target_raster_path, base_raster_path_list, options=vrt_options)
+    with open(target_dem_vrt_token_path, 'w') as token_file:
+        token_file.write(str(datetime.datetime.now()))
 
 
 if __name__ == '__main__':
