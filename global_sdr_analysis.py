@@ -10,6 +10,7 @@ import zipfile
 import logging
 import sys
 
+from osgeo import gdal
 import pygeoprocessing
 import taskgraph
 import rtree.index
@@ -34,9 +35,18 @@ DEM_RTREE_PATH = os.path.join(WORKSPACE_DIR, 'dem_rtree')
 EROSIVITY_URL = r'https://storage.googleapis.com/global-invest-sdr-data/erosivity_CIAT_50km_md5_8e0d84d5736d118e111b8ee0ded65358.tif'
 ERODIBILITY_URL = r'https://storage.googleapis.com/global-invest-sdr-data/erodibility_globe_ISRIC_30arcseconds_md5_e3f8961b77539b686deb9a3d04ee4ce3.tif'
 LULC_URL = r'https://storage.googleapis.com/ipbes-ndr-ecoshard-data/ESACCI-LC-L4-LCCS-Map-300m-P1Y-2015-v2.0.7_md5_1254d25f937e6d9bdee5779d377c5aa4.tif'
+GLOBIO_LULCS_URL = r'https://storage.googleapis.com/globio_landuse_historic_and_ssp_blake2b_4153935fd8cbb510d8500d59272e4479.zip'
+
 DEM_URL = r'https://storage.googleapis.com/global-invest-sdr-data/global_dem_3s_md5_22d0c3809af491fa09d03002bdf09748.zip'
 WATERSHEDS_URL = r'https://storage.googleapis.com/global-invest-sdr-data/watersheds_globe_HydroSHEDS_15arcseconds_md5_c6acf2762123bbd5de605358e733a304.zip'
 BIOPHYSICAL_TABLE_URL = r'https://storage.googleapis.com/global-invest-sdr-data/Biophysical_table_ESA_ARIES_RS_md5_e16587ebe01db21034ef94171c76c463.csv'
+
+LANDCOVER_RASTER_PATHS = {
+    'esa_2015': f"{ECOSHARD_DIR}/ESACCI-LC-L4-LCCS-Map-300m-P1Y-2015-v2.0.7_md5_1254d25f937e6d9bdee5779d377c5aa4.tif",
+    'globio_2050_ssp1': f"{ECOSHARD_DIR}/Globio4_landuse_10sec_2050_cropint_SSP1.tif",
+    'globio_2050_ssp3': f"{ECOSHARD_DIR}/Globio4_landuse_10sec_2050_cropint_SSP3.tif",
+    'globio_2050_ssp5': f"{ECOSHARD_DIR}/Globio4_landuse_10sec_2050_cropint_SSP5.tif",
+}
 
 
 def main():
@@ -58,6 +68,14 @@ def main():
         args=(LULC_URL, lulc_path),
         target_path_list=[lulc_path],
         task_name='fetch lulc raster')
+
+    globio_lulcs_token_path = os.path.join(
+        ECOSHARD_DIR, '%s.COMPLETE' % os.path.basename(GLOBIO_LULCS_URL))
+    fetch_globio_lulc_zip_task = task_graph.add_task(
+        func=download_validate_and_unzip,
+        args=(GLOBIO_LULCS_URL, ECOSHARD_DIR, globio_lulcs_token_path),
+        target_path_list=[globio_lulcs_token_path],
+        task_name='fetch globio archive')
 
     erosivity_path = os.path.join(
         ECOSHARD_DIR, os.path.basename(EROSIVITY_URL))
@@ -112,14 +130,30 @@ def main():
         task_name='build dem rtree')
 
     task_graph.join()
-
+    scheduled_watershed_prefixes = set()
     LOGGER.debug('iterating over hydrosheds')
     for watershed_path in glob.glob(os.path.join(
             ECOSHARD_DIR, 'watersheds_globe_HydroSHEDS_15arcseconds',
             '*.shp')):
         LOGGER.debug(watershed_path)
+        watershed_basename = os.path.splitext(
+            os.path.basename(watershed_path))[0]
+        watershed_vector = gdal.OpenEx(watershed_path, gdal.OF_VECTOR)
+        watershed_layer = watershed_vector.GetLayer()
+        for watershed_feature in watershed_layer:
+            watershed_fid = watershed_feature.GetFID()
+            ws_prefix = 'ws_%s_%d' % (watershed_basename, watershed_fid)
+            if ws_prefix in scheduled_watershed_prefixes:
+                raise ValueError('%s has already been scheduled', ws_prefix)
+            scheduled_watershed_prefixes.add(ws_prefix)
+            watershed_geom = watershed_feature.GetGeometryRef()
+            watershed_area = watershed_geom.GetArea()
+            watershed_geom = None
+            if watershed_area < 0.0:
+                continue
 
     task_graph.close()
+    task_graph.join()
 
 
 def download_validate_and_unzip(url, target_dir, token_file):
