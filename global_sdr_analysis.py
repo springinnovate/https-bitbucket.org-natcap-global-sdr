@@ -118,6 +118,7 @@ def main():
         args=(
             base_raster_pattern, DEM_TARGET_NODATA, dem_vrt_path,
             dem_vrt_token_path),
+        ignore_path_list=[dem_vrt_path],
         target_path_list=[dem_vrt_token_path],
         task_name='make dem vrt')
 
@@ -141,8 +142,8 @@ def main():
             scheduled_watershed_prefixes.add(ws_prefix)
             watershed_geom = watershed_feature.GetGeometryRef()
             watershed_area = watershed_geom.GetArea()
-            watershed_geom = None
-            if watershed_area < 0.0:
+            if watershed_area <= 0.0:
+                watershed_geom = None
                 continue
 
             # make a few subdirectories so we don't explode on number of files per
@@ -173,28 +174,38 @@ def main():
                 local_workspace_dir, '%s.gpkg' % ws_prefix)
             if os.path.exists(watershed_vector_path):
                 os.remove(watershed_vector_path)
-            driver = gdal.GetDriverByName('GPKG')
-            watershed_vector = driver.Create(
-                watershed_vector_path, 0, 0, 0, gdal.GDT_Unknown)
+            driver = ogr.GetDriverByName('GPKG')
+            LOGGER.debug('create vector')
+            watershed_vector = driver.CreateDataSource(watershed_vector_path)
+            LOGGER.debug('create layer')
             watershed_layer = watershed_vector.CreateLayer(
                 os.path.splitext(os.path.basename(watershed_vector_path))[0],
                 epsg_srs, ogr.wkbPolygon)
-            watershed_feature = ogr.Feature(watershed_layer.GetLayerDefn())
-
-            watershed_geom.Transform(wgs84_to_utm)
-            watershed_feature.SetGeometry(watershed_geom)
-            watershed_layer.AddFeature(watershed_feature)
+            LOGGER.debug('get layer defn')
+            layer_defn = watershed_layer.GetLayerDefn()
+            LOGGER.debug('clone geometry %s', watershed_geom.ExportToWkt())
+            feature_geometry = watershed_geom.Clone()
+            LOGGER.debug('create feature')
+            watershed_feature = ogr.Feature(layer_defn)
+            LOGGER.debug('transform geom')
+            feature_geometry.Transform(wgs84_to_utm)
+            LOGGER.debug('set geom')
+            watershed_feature.SetGeometry(feature_geometry)
+            LOGGER.debug('add feature')
+            watershed_layer.CreateFeature(watershed_feature)
+            LOGGER.debug('sync to disk')
             watershed_layer.SyncToDisk()
             watershed_geom = None
+            feature_geometry = None
             watershed_feature = None
             watershed_layer = None
             watershed_vector = None
 
             dem_pixel_size = pygeoprocessing.get_raster_info(
                 dem_vrt_path)['pixel_size']
-            min_len = min(length_of_degree(centroid_geom.GetY()))
+            m_per_deg = length_of_degree(centroid_geom.GetY())
             target_pixel_size = (
-                min_len*dem_pixel_size[0], min_len*dem_pixel_size[1])
+                m_per_deg*dem_pixel_size[0], m_per_deg*dem_pixel_size[1])
 
             # call SDR?
             sdr_args = {
@@ -212,7 +223,9 @@ def main():
                 'ic_0_param': '0.5',
                 'local_projection_epsg': epsg_code,
                 'target_pixel_size': target_pixel_size,
+                'biophysical_table_lucode_field': 'id',
             }
+            LOGGER.debug('about to call sdr')
             natcap.invest.sdr.execute(sdr_args)
             break  # for debugging
 
