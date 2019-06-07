@@ -27,6 +27,8 @@ WORKSPACE_DIR = 'workspace_global_sdr_dir'
 CHURN_DIR = os.path.join(WORKSPACE_DIR, 'churn')
 ECOSHARD_DIR = os.path.join(CHURN_DIR, 'ecoshards')
 
+DEM_TARGET_NODATA = -32768
+
 N_CPUS = 4
 TASKGRAPH_REPORTING_FREQUENCY = 5.0
 
@@ -110,9 +112,12 @@ def main():
     dem_vrt_path = os.path.join(CHURN_DIR, 'global_dem.vrt')
     dem_vrt_token_path = os.path.join(
         CHURN_DIR, '%s.COMPLETE' % os.path.basename(dem_vrt_path))
+    base_raster_pattern = os.path.join(ECOSHARD_DIR, 'global_dem_3s', '*.tif')
     make_dem_task = task_graph.add_task(
         func=make_vrt,
-        args=(base_raster_path_list, dem_vrt_path, dem_vrt_token_path),
+        args=(
+            base_raster_pattern, DEM_TARGET_NODATA, dem_vrt_path,
+            dem_vrt_token_path),
         target_path_list=[dem_vrt_token_path],
         task_name='make dem vrt')
 
@@ -185,6 +190,12 @@ def main():
             watershed_layer = None
             watershed_vector = None
 
+            dem_pixel_size = pygeoprocessing.get_raster_info(
+                dem_vrt_path)['pixel_size']
+            min_len = min(length_of_degree(centroid_geom.GetY()))
+            target_pixel_size = (
+                min_len*dem_pixel_size[0], min_len*dem_pixel_size[1])
+
             # call SDR?
             sdr_args = {
                 'workspace_dir': local_workspace_dir,
@@ -199,11 +210,12 @@ def main():
                 'k_param': '2',
                 'sdr_max': '0.8',
                 'ic_0_param': '0.5',
-                'local_projection_epsg': epsg_code
+                'local_projection_epsg': epsg_code,
+                'target_pixel_size': target_pixel_size,
             }
             natcap.invest.sdr.execute(sdr_args)
+            break  # for debugging
 
-            break
     task_graph.close()
     task_graph.join()
 
@@ -329,13 +341,13 @@ def hash_file(file_path, hash_algorithm, buf_size=2**20):
 
 
 def make_vrt(
-        base_raster_path_list, target_raster_path,
+        base_raster_pattern, target_nodata, target_raster_path,
         target_dem_vrt_token_path):
     """Make a VRT given a list of files.
 
     Parameters:
-        base_raster_path_list (list): list of raster paths to construct into
-            the VRT.
+        base_raster_pattern (str): pattern of rasters to build to vrt.
+        target_nodata (numeric): desired nodata.
         target_raster_path (str): path to desired target vrt
         target_dem_vrt_token_path (str): path to a file to write when
             complete.
@@ -344,12 +356,30 @@ def make_vrt(
         None.
 
     """
-    vrt_options = gdal.BuildVRTOptions(
-        VRTNodata=target_nodata)
+    base_raster_path_list = glob.glob(base_raster_pattern)
+    vrt_options = gdal.BuildVRTOptions(VRTNodata=target_nodata)
     gdal.BuildVRT(
         target_raster_path, base_raster_path_list, options=vrt_options)
     with open(target_dem_vrt_token_path, 'w') as token_file:
         token_file.write(str(datetime.datetime.now()))
+
+
+def length_of_degree(lat):
+    """Calculate the length of a degree in meters."""
+    m1 = 111132.92
+    m2 = -559.82
+    m3 = 1.175
+    m4 = -0.0023
+    p1 = 111412.84
+    p2 = -93.5
+    p3 = 0.118
+    lat_rad = lat * math.pi / 180
+    latlen = (
+        m1 + m2 * math.cos(2 * lat_rad) + m3 * math.cos(4 * lat_rad) +
+        m4 * math.cos(6 * lat_rad))
+    longlen = abs(
+        p1 * math.cos(lat_rad) + p2 * math.cos(3 * lat_rad) + p3 * math.cos(5 * lat_rad))
+    return max(latlen, longlen)
 
 
 if __name__ == '__main__':
