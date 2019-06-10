@@ -32,7 +32,7 @@ N_CPUS = 4
 TASKGRAPH_REPORTING_FREQUENCY = 5.0
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format=(
         '%(asctime)s (%(relativeCreated)d) %(levelname)s %(name)s'
         ' [%(funcName)s:%(lineno)d] %(message)s'),
