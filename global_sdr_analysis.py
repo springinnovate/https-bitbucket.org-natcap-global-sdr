@@ -31,7 +31,7 @@ DEM_TARGET_NODATA = -32768
 
 N_CPUS = multiprocessing.cpu_count()
 TASKGRAPH_REPORTING_FREQUENCY = 5.0
-LOGGING_LEVEL = logging.INFO
+LOGGING_LEVEL = logging.DEBUG
 
 logging.basicConfig(
     level=LOGGING_LEVEL,
@@ -121,12 +121,13 @@ def main():
         args=(
             base_raster_pattern, DEM_TARGET_NODATA, dem_vrt_path,
             dem_vrt_token_path),
+        dependent_task_list=[fetch_dem_task],
         ignore_path_list=[dem_vrt_path],
         target_path_list=[dem_vrt_token_path],
         task_name='make dem vrt')
-
-    task_graph.join()
     scheduled_watershed_prefixes = set()
+    make_dem_task.join()
+    fetch_watersheds_task.join()
     LOGGER.debug('iterating over hydrosheds')
     for watershed_path in glob.glob(os.path.join(
             ECOSHARD_DIR, 'watersheds_globe_HydroSHEDS_15arcseconds',
@@ -180,25 +181,26 @@ def main():
             if os.path.exists(watershed_vector_path):
                 os.remove(watershed_vector_path)
             driver = ogr.GetDriverByName('GPKG')
-            watershed_vector = driver.CreateDataSource(watershed_vector_path)
-            watershed_layer = watershed_vector.CreateLayer(
+            local_watershed_vector = driver.CreateDataSource(
+                watershed_vector_path)
+            local_watershed_layer = local_watershed_vector.CreateLayer(
                 os.path.splitext(os.path.basename(watershed_vector_path))[0],
                 epsg_srs, ogr.wkbPolygon)
-            watershed_layer.CreateField(
+            local_watershed_layer.CreateField(
                 ogr.FieldDefn('ws_id', ogr.OFTInteger))
-            layer_defn = watershed_layer.GetLayerDefn()
+            layer_defn = local_watershed_layer.GetLayerDefn()
             feature_geometry = watershed_geom.Clone()
             watershed_feature = ogr.Feature(layer_defn)
             feature_geometry.Transform(wgs84_to_utm)
             watershed_feature.SetGeometry(feature_geometry)
             watershed_feature.SetField('ws_id', 0)
-            watershed_layer.CreateFeature(watershed_feature)
-            watershed_layer.SyncToDisk()
+            local_watershed_layer.CreateFeature(watershed_feature)
+            local_watershed_layer.SyncToDisk()
             watershed_geom = None
             feature_geometry = None
             watershed_feature = None
-            watershed_layer = None
-            watershed_vector = None
+            local_watershed_layer = None
+            local_watershed_vector = None
 
             # clip dem
             clipped_dir = os.path.join(local_workspace_dir, 'pre_clipped')
@@ -225,7 +227,11 @@ def main():
                     'base_vector_path_list': [watershed_vector_path],
                     'target_sr_wkt': dem_info['projection']
                     },
-                dependent_task_list=[make_dem_task],
+                dependent_task_list=[
+                    fetch_lulc_task,
+                    fetch_erosivity_task,
+                    fetch_erodibility_task,
+                    make_dem_task],
                 target_path_list=target_raster_path_list,
                 task_name='pre-clip for %s' % ws_prefix)
 
@@ -255,6 +261,7 @@ def main():
                 'target_pixel_size': target_pixel_size,
                 'biophysical_table_lucode_field': 'id',
             }
+            LOGGER.debug('adding %s', ws_prefix)
             task_graph.add_task(
                 func=natcap.invest.sdr.execute,
                 args=(sdr_args,),
