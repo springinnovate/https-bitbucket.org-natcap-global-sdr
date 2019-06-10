@@ -408,8 +408,14 @@ def make_vrt(
     vrt_options = gdal.BuildVRTOptions(VRTNodata=target_nodata)
     gdal.BuildVRT(
         target_raster_path, base_raster_path_list, options=vrt_options)
-    with open(target_dem_vrt_token_path, 'w') as token_file:
-        token_file.write(str(datetime.datetime.now()))
+    target_dem = gdal.OpenEx(target_raster_path, gdal.OF_RASTER)
+    if target_dem is not None:
+        with open(target_dem_vrt_token_path, 'w') as token_file:
+            token_file.write(str(datetime.datetime.now()))
+    else:
+        raise RuntimeError(
+            "didn't make VRT at %s on: %s" % (
+                target_raster_path, base_raster_path_list))
 
 
 def length_of_degree(lat):
