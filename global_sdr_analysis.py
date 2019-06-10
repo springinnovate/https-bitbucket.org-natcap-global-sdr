@@ -414,8 +414,9 @@ def make_vrt(
             token_file.write(str(datetime.datetime.now()))
     else:
         raise RuntimeError(
-            "didn't make VRT at %s on: %s" % (
-                target_raster_path, base_raster_path_list))
+            "didn't make VRT at %s on: %s, from: %s" % (
+                target_raster_path, base_raster_path_list,
+                base_raster_pattern))
 
 
 def length_of_degree(lat):
