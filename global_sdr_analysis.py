@@ -17,8 +17,6 @@ from osgeo import gdal
 from osgeo import osr
 import pygeoprocessing
 import taskgraph
-import rtree.index
-import pickle
 
 # set a 1GB limit for the cache
 gdal.SetCacheMax(2**30)
@@ -26,6 +24,7 @@ gdal.SetCacheMax(2**30)
 WORKSPACE_DIR = 'workspace_global_sdr_dir'
 CHURN_DIR = os.path.join(WORKSPACE_DIR, 'churn')
 ECOSHARD_DIR = os.path.join(CHURN_DIR, 'ecoshards')
+SDR_WORKSPACES_DIR = os.path.join(WORKSPACE_DIR, 'sdr_workspaces')
 
 DEM_TARGET_NODATA = -32768
 
@@ -40,7 +39,6 @@ logging.basicConfig(
     stream=sys.stdout)
 LOGGER = logging.getLogger(__name__)
 
-DEM_RTREE_PATH = os.path.join(WORKSPACE_DIR, 'dem_rtree')
 EROSIVITY_URL = r'https://storage.googleapis.com/global-invest-sdr-data/erosivity_CIAT_50km_md5_8e0d84d5736d118e111b8ee0ded65358.tif'
 ERODIBILITY_URL = r'https://storage.googleapis.com/global-invest-sdr-data/erodibility_globe_ISRIC_30arcseconds_md5_e3f8961b77539b686deb9a3d04ee4ce3.tif'
 LULC_URL = r'https://storage.googleapis.com/ipbes-ndr-ecoshard-data/ESACCI-LC-L4-LCCS-Map-300m-P1Y-2015-v2.0.7_md5_1254d25f937e6d9bdee5779d377c5aa4.tif'
@@ -52,7 +50,7 @@ BIOPHYSICAL_TABLE_URL = r'https://storage.googleapis.com/global-invest-sdr-data/
 def main():
     """Entry point."""
     for dir_path in [
-            WORKSPACE_DIR, CHURN_DIR, ECOSHARD_DIR, DEM_RTREE_PATH]:
+            WORKSPACE_DIR, CHURN_DIR, ECOSHARD_DIR]:
         try:
             os.makedirs(dir_path)
         except OSError:
@@ -136,23 +134,25 @@ def main():
         for watershed_feature in watershed_layer:
             watershed_fid = watershed_feature.GetFID()
             ws_prefix = 'ws_%s_%d' % (watershed_basename, watershed_fid)
-            LOGGER.debug('processing %s', ws_prefix)
             if ws_prefix in scheduled_watershed_prefixes:
                 raise ValueError('%s has already been scheduled', ws_prefix)
             scheduled_watershed_prefixes.add(ws_prefix)
             watershed_geom = watershed_feature.GetGeometryRef()
             watershed_area = watershed_geom.GetArea()
-            if watershed_area <= 0.0:
-                watershed_geom = None
+            if watershed_area < 0.03:
+                #  0.03 square degrees is a healthy underapproximation of
+                # 100 sq km which is about the minimum watershed size we'd
+                # want.
                 continue
 
+            LOGGER.info('processing %s', ws_prefix)
             # make a few subdirectories so we don't explode on number of files per
             # directory. The largest watershed is 726k
             last_digits = '%.4d' % watershed_fid
             local_workspace_dir = os.path.join(
-                WORKSPACE_DIR, last_digits[-1], last_digits[-2],
+                SDR_WORKSPACES_DIR, last_digits[-1], last_digits[-2],
                 last_digits[-3], last_digits[-4],
-                "%s_working_dir" % ws_prefix)
+                "%s" % ws_prefix)
             if not os.path.exists(local_workspace_dir):
                 os.makedirs(local_workspace_dir)
 
@@ -175,25 +175,19 @@ def main():
             if os.path.exists(watershed_vector_path):
                 os.remove(watershed_vector_path)
             driver = ogr.GetDriverByName('GPKG')
-            LOGGER.debug('create vector')
             watershed_vector = driver.CreateDataSource(watershed_vector_path)
-            LOGGER.debug('create layer')
             watershed_layer = watershed_vector.CreateLayer(
                 os.path.splitext(os.path.basename(watershed_vector_path))[0],
                 epsg_srs, ogr.wkbPolygon)
-            LOGGER.debug('get layer defn')
+            watershed_layer.CreateField(
+                ogr.FieldDefn('ws_id', ogr.OFTInteger))
             layer_defn = watershed_layer.GetLayerDefn()
-            LOGGER.debug('clone geometry %s', watershed_geom.ExportToWkt())
             feature_geometry = watershed_geom.Clone()
-            LOGGER.debug('create feature')
             watershed_feature = ogr.Feature(layer_defn)
-            LOGGER.debug('transform geom')
             feature_geometry.Transform(wgs84_to_utm)
-            LOGGER.debug('set geom')
             watershed_feature.SetGeometry(feature_geometry)
-            LOGGER.debug('add feature')
+            watershed_feature.SetField('ws_id', 0)
             watershed_layer.CreateFeature(watershed_feature)
-            LOGGER.debug('sync to disk')
             watershed_layer.SyncToDisk()
             watershed_geom = None
             feature_geometry = None
@@ -201,8 +195,38 @@ def main():
             watershed_layer = None
             watershed_vector = None
 
-            dem_pixel_size = pygeoprocessing.get_raster_info(
-                dem_vrt_path)['pixel_size']
+            # clip dem
+            clipped_dir = os.path.join(local_workspace_dir, 'pre_clipped')
+            try:
+                os.makedirs(clipped_dir)
+            except OSError:
+                pass
+            target_raster_path_list = [
+                os.path.join(clipped_dir, '%s_clipped%s.tif' % (
+                    raster_type, ws_prefix))
+                for raster_type in ['dem', 'erosivity', 'erodibility', 'lulc']]
+            base_raster_path_list = [
+                dem_vrt_path, erosivity_path, erodibility_path, lulc_path]
+            dem_info = pygeoprocessing.get_raster_info(dem_vrt_path)
+
+            dem_pixel_size = dem_info['pixel_size']
+            pre_align_task = task_graph.add_task(
+                func=pygeoprocessing.align_and_resize_raster_stack,
+                args=(
+                    base_raster_path_list, target_raster_path_list,
+                    ['near']*len(base_raster_path_list),
+                    dem_pixel_size, 'intersection'),
+                kwargs={
+                    'base_vector_path_list': [watershed_vector_path],
+                    'target_sr_wkt': dem_info['projection']
+                    },
+                target_path_list=target_raster_path_list,
+                task_name='pre-clip for %s' % ws_prefix)
+
+            # clip erosivity
+            # clip erodibility
+            # cilp lulc
+
             m_per_deg = length_of_degree(centroid_geom.GetY())
             target_pixel_size = (
                 m_per_deg*dem_pixel_size[0], m_per_deg*dem_pixel_size[1])
@@ -211,10 +235,10 @@ def main():
             sdr_args = {
                 'workspace_dir': local_workspace_dir,
                 'results_suffix': ws_prefix,
-                'dem_path': dem_vrt_path,
-                'erosivity_path': erosivity_path,
-                'erodibility_path': erodibility_path,
-                'lulc_path': lulc_path,
+                'dem_path': target_raster_path_list[0],
+                'erosivity_path': target_raster_path_list[1],
+                'erodibility_path': target_raster_path_list[2],
+                'lulc_path': target_raster_path_list[3],
                 'watersheds_path': watershed_vector_path,
                 'biophysical_table_path': biophysical_table_path,
                 'threshold_flow_accumulation': 1000,
@@ -225,9 +249,15 @@ def main():
                 'target_pixel_size': target_pixel_size,
                 'biophysical_table_lucode_field': 'id',
             }
-            LOGGER.debug('about to call sdr')
-            natcap.invest.sdr.execute(sdr_args)
-            break  # for debugging
+            task_graph.add_task(
+                func=natcap.invest.sdr.execute,
+                args=(sdr_args,),
+                target_path_list=[os.path.join(
+                    local_workspace_dir,
+                    'watershed_results_sdr_%s.shp' % ws_prefix)],
+                dependent_task_list=[pre_align_task],
+                task_name='sdr for %s' % ws_prefix)
+            break
 
     task_graph.close()
     task_graph.join()
