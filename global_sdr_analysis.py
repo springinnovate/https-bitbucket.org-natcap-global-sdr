@@ -1,4 +1,5 @@
 """Script to run a global SDR analysis."""
+import multiprocessing
 import math
 import glob
 import urllib
@@ -28,7 +29,7 @@ SDR_WORKSPACES_DIR = os.path.join(WORKSPACE_DIR, 'sdr_workspaces')
 
 DEM_TARGET_NODATA = -32768
 
-N_CPUS = 4
+N_CPUS = multiprocessing.cpu_count()
 TASKGRAPH_REPORTING_FREQUENCY = 5.0
 LOGGING_LEVEL = logging.INFO
 
