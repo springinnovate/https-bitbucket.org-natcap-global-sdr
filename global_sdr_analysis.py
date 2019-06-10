@@ -31,7 +31,7 @@ DEM_TARGET_NODATA = -32768
 
 N_CPUS = multiprocessing.cpu_count()
 TASKGRAPH_REPORTING_FREQUENCY = 5.0
-LOGGING_LEVEL = logging.DEBUG
+LOGGING_LEVEL = logging.INFO
 
 logging.basicConfig(
     level=LOGGING_LEVEL,
@@ -167,40 +167,16 @@ def main():
             utm_code = (math.floor((centroid_geom.GetX() + 180)/6) % 60) + 1
             lat_code = 6 if centroid_geom.GetY() > 0 else 7
             epsg_code = int('32%d%02d' % (lat_code, utm_code))
-            epsg_srs = osr.SpatialReference()
-            epsg_srs.ImportFromEPSG(epsg_code)
 
-            wgs84_srs = osr.SpatialReference()
-            wgs84_srs.ImportFromEPSG(4326)
-            wgs84_to_utm = osr.CoordinateTransformation(wgs84_srs, epsg_srs)
-
-            # clip out watershed to its own file
-            # create a new shapefile
-            watershed_vector_path = os.path.join(
+            local_watershed_vector_path = os.path.join(
                 local_workspace_dir, '%s.gpkg' % ws_prefix)
-            if os.path.exists(watershed_vector_path):
-                os.remove(watershed_vector_path)
-            driver = ogr.GetDriverByName('GPKG')
-            local_watershed_vector = driver.CreateDataSource(
-                watershed_vector_path)
-            local_watershed_layer = local_watershed_vector.CreateLayer(
-                os.path.splitext(os.path.basename(watershed_vector_path))[0],
-                epsg_srs, ogr.wkbPolygon)
-            local_watershed_layer.CreateField(
-                ogr.FieldDefn('ws_id', ogr.OFTInteger))
-            layer_defn = local_watershed_layer.GetLayerDefn()
-            feature_geometry = watershed_geom.Clone()
-            watershed_feature = ogr.Feature(layer_defn)
-            feature_geometry.Transform(wgs84_to_utm)
-            watershed_feature.SetGeometry(feature_geometry)
-            watershed_feature.SetField('ws_id', 0)
-            local_watershed_layer.CreateFeature(watershed_feature)
-            local_watershed_layer.SyncToDisk()
-            watershed_geom = None
-            feature_geometry = None
-            watershed_feature = None
-            local_watershed_layer = None
-            local_watershed_vector = None
+            make_local_watershed_task = task_graph.add_task(
+                func=make_local_watershed,
+                args=(
+                    watershed_path, watershed_fid, epsg_code,
+                    local_watershed_vector_path),
+                target_path_list=[local_watershed_vector_path],
+                task_name='make local watershed for %s' % ws_prefix)
 
             # clip dem
             clipped_dir = os.path.join(local_workspace_dir, 'pre_clipped')
@@ -224,26 +200,22 @@ def main():
                     ['near']*len(base_raster_path_list),
                     dem_pixel_size, 'intersection'),
                 kwargs={
-                    'base_vector_path_list': [watershed_vector_path],
+                    'base_vector_path_list': [local_watershed_vector_path],
                     'target_sr_wkt': dem_info['projection']
                     },
                 dependent_task_list=[
                     fetch_lulc_task,
                     fetch_erosivity_task,
                     fetch_erodibility_task,
-                    make_dem_task],
+                    make_dem_task,
+                    make_local_watershed_task],
                 target_path_list=target_raster_path_list,
                 task_name='pre-clip for %s' % ws_prefix)
-
-            # clip erosivity
-            # clip erodibility
-            # cilp lulc
 
             m_per_deg = length_of_degree(centroid_geom.GetY())
             target_pixel_size = (
                 m_per_deg*dem_pixel_size[0], m_per_deg*dem_pixel_size[1])
 
-            # call SDR?
             sdr_args = {
                 'workspace_dir': local_workspace_dir,
                 'results_suffix': ws_prefix,
@@ -251,7 +223,7 @@ def main():
                 'erosivity_path': target_raster_path_list[1],
                 'erodibility_path': target_raster_path_list[2],
                 'lulc_path': target_raster_path_list[3],
-                'watersheds_path': watershed_vector_path,
+                'watersheds_path': local_watershed_vector_path,
                 'biophysical_table_path': biophysical_table_path,
                 'threshold_flow_accumulation': 1000,
                 'k_param': '2',
@@ -442,6 +414,61 @@ def length_of_degree(lat):
     longlen = abs(
         p1 * math.cos(lat_rad) + p2 * math.cos(3 * lat_rad) + p3 * math.cos(5 * lat_rad))
     return max(latlen, longlen)
+
+
+def make_local_watershed(
+        watershed_path, watershed_fid, epsg_code,
+        local_watershed_vector_path):
+    """Make a local reference for a watershed.
+
+    Parameters:
+        watershed_path (str): path to base watershed vector
+        watershed_fid (int): FID for the watershed to remove
+        epsg_code (str): EPSG code to project local watershed to
+        local_watershed_vector_path (str): path to watershed shapefile to
+            create.
+
+    Returns:
+        None.
+    """
+
+    watershed_vector = gdal.OpenEx(watershed_path, gdal.OF_VECTOR)
+    watershed_layer = watershed_vector.GetLayer()
+    watershed_feature = watershed_layer.GetFeature(watershed_fid)
+    watershed_geom = watershed_feature.GetGeometryRef()
+
+    epsg_srs = osr.SpatialReference()
+    epsg_srs.ImportFromEPSG(epsg_code)
+
+    wgs84_srs = osr.SpatialReference()
+    wgs84_srs.ImportFromEPSG(4326)
+    wgs84_to_utm = osr.CoordinateTransformation(wgs84_srs, epsg_srs)
+
+    # clip out watershed to its own file
+    # create a new shapefile
+    if os.path.exists(local_watershed_vector_path):
+        os.remove(local_watershed_vector_path)
+    driver = ogr.GetDriverByName('GPKG')
+    local_watershed_vector = driver.CreateDataSource(
+        local_watershed_vector_path)
+    local_watershed_layer = local_watershed_vector.CreateLayer(
+        os.path.splitext(os.path.basename(local_watershed_vector_path))[0],
+        epsg_srs, ogr.wkbPolygon)
+    local_watershed_layer.CreateField(
+        ogr.FieldDefn('ws_id', ogr.OFTInteger))
+    layer_defn = local_watershed_layer.GetLayerDefn()
+    feature_geometry = watershed_geom.Clone()
+    watershed_feature = ogr.Feature(layer_defn)
+    feature_geometry.Transform(wgs84_to_utm)
+    watershed_feature.SetGeometry(feature_geometry)
+    watershed_feature.SetField('ws_id', 0)
+    local_watershed_layer.CreateFeature(watershed_feature)
+    local_watershed_layer.SyncToDisk()
+    watershed_geom = None
+    feature_geometry = None
+    watershed_feature = None
+    local_watershed_layer = None
+    local_watershed_vector = None
 
 
 if __name__ == '__main__':
