@@ -225,6 +225,7 @@ def main():
                     'base_vector_path_list': [watershed_vector_path],
                     'target_sr_wkt': dem_info['projection']
                     },
+                dependent_task_list=[make_dem_task],
                 target_path_list=target_raster_path_list,
                 task_name='pre-clip for %s' % ws_prefix)
 
