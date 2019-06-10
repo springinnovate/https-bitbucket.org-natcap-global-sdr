@@ -263,7 +263,6 @@ def main():
                     'watershed_results_sdr_%s.shp' % ws_prefix)],
                 dependent_task_list=[pre_align_task],
                 task_name='sdr for %s' % ws_prefix)
-            break
 
     task_graph.close()
     task_graph.join()
