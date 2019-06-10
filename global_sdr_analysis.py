@@ -30,9 +30,10 @@ DEM_TARGET_NODATA = -32768
 
 N_CPUS = 4
 TASKGRAPH_REPORTING_FREQUENCY = 5.0
+LOGGING_LEVEL = logging.INFO
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOGGING_LEVEL,
     format=(
         '%(asctime)s (%(relativeCreated)d) %(levelname)s %(name)s'
         ' [%(funcName)s:%(lineno)d] %(message)s'),
@@ -59,6 +60,9 @@ def main():
     task_graph = taskgraph.TaskGraph(
         os.path.join(WORKSPACE_DIR, 'taskgraph_cache'), N_CPUS,
         TASKGRAPH_REPORTING_FREQUENCY)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(LOGGING_LEVEL)
 
     lulc_path = os.path.join(ECOSHARD_DIR, os.path.basename(LULC_URL))
     fetch_lulc_task = task_graph.add_task(
