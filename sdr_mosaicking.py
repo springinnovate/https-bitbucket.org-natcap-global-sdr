@@ -115,7 +115,7 @@ def main():
                 kwargs={'target_sr_wkt': WSGS84_WKT},
                 target_path_list=[target_wgs84_raster_path],
                 dependent_task_list=[
-                    global_raster_task_path_map[raster_suffix][0]],
+                    global_raster_task_path_map[RASTER_NAME][0]],
                 task_name='wgs84 project %s' % os.path.basename(
                     base_raster_path))
 
@@ -125,10 +125,10 @@ def main():
                 func=mosaic_base_into_target,
                 args=(
                     target_wgs84_raster_path,
-                    global_raster_task_path_map[raster_suffix][1],
+                    global_raster_task_path_map[RASTER_NAME][1],
                     mosaic_complete_token_path),
                 ignore_path_list=[
-                    global_raster_task_path_map[raster_suffix][1]],
+                    global_raster_task_path_map[RASTER_NAME][1]],
                 target_path_list=[mosaic_complete_token_path],
                 dependent_task_list=(
                     [wgs84_project_task]+previous_project_task_list),
