@@ -120,7 +120,7 @@ def main():
                     base_raster_path))
 
             mosaic_complete_token_path = '%s.MOSAICKED' % (
-                os.path.splitext(target_wgs84_raster_path))
+                os.path.splitext(target_wgs84_raster_path)[0])
             mosiac_task = task_graph.add_task(
                 func=mosaic_base_into_target,
                 args=(
