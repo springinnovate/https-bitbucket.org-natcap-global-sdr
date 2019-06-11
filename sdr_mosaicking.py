@@ -27,8 +27,8 @@ logging.basicConfig(
     stream=sys.stdout)
 LOGGER = logging.getLogger(__name__)
 
-WORKSPACE_DIRECTORY = os.path.join(
-    'workspace_ipbes_sdr_dir', 'sdr_workspaces')
+BASE_RASTER_DIR = os.path.join(
+    'workspace_global_sdr_dir', 'sdr_workspaces')
 
 # degree is 110570 at the Equator and we want 300m pixels
 MOSAIC_DEGREE_CELL_SIZE = 300.0 / 110570
@@ -52,10 +52,10 @@ def main():
         pass
 
     global_raster_task_path_map = {}
-    LOGGER.debug("gathering directory list")
+    LOGGER.debug("gathering directory list from %s", BASE_RASTER_DIR)
     leaf_directory_list = (
         (dirpath, filenames) for (dirpath, dirnames, filenames) in os.walk(
-            WORKSPACE_DIRECTORY) if not dirnames)
+            BASE_RASTER_DIR) if not dirnames)
 
     # peek at first element
     sample_dirpath, sample_filenames = next(leaf_directory_list)
@@ -72,9 +72,8 @@ def main():
 
     base_raster_info = pygeoprocessing.get_raster_info(base_raster_path)
     target_raster_path = os.path.join(WORKSPACE_DIR, '%s.tif' % RASTER_NAME)
-    target_token_complete_path = f'''{
-        os.path.splitext(target_raster_path)[0]}_{
-            MOSAIC_DEGREE_CELL_SIZE}.TOKEN'''
+    target_token_complete_path = '%s_%s.TOKEN' % (
+        os.path.splitext(target_raster_path)[0], MOSAIC_DEGREE_CELL_SIZE)
     LOGGER.debug(target_raster_path)
     make_empty_raster_task = task_graph.add_task(
         func=make_empty_wgs84_raster,
@@ -84,7 +83,7 @@ def main():
             target_token_complete_path),
         ignore_path_list=[target_raster_path],
         target_path_list=[target_token_complete_path],
-        task_name=f'create empty global {RASTER_NAME}')
+        task_name='create empty global %s' % RASTER_NAME)
     global_raster_task_path_map[RASTER_NAME] = (
         make_empty_raster_task, target_raster_path)
     LOGGER.info("found all the raster suffixes in %s", sample_dirpath)
@@ -93,7 +92,7 @@ def main():
         previous_project_task_list = []
         leaf_directory_list = (
             (dirpath, filenames) for (dirpath, dirnames, filenames) in os.walk(
-                WORKSPACE_DIRECTORY) if not dirnames)
+                BASE_RASTER_DIR))
         for dirpath, filenames in leaf_directory_list:
             try:
                 base_raster_path = next(iter(
@@ -105,8 +104,8 @@ def main():
                     "Expected to find %s in %s but not found %s" % (
                         raster_suffix, dirpath, (dirpath, filenames)))
 
-            target_wgs84_raster_path = f'''{
-                os.path.splitext(base_raster_path)[0]}_wgs84.tif'''
+            target_wgs84_raster_path = '%s_wgs84.tif' % os.path.splitext(
+                base_raster_path)[0]
             wgs84_project_task = task_graph.add_task(
                 func=pygeoprocessing.warp_raster,
                 args=(
@@ -117,11 +116,11 @@ def main():
                 target_path_list=[target_wgs84_raster_path],
                 dependent_task_list=[
                     global_raster_task_path_map[raster_suffix][0]],
-                task_name=f'''wgs84 project {
-                    os.path.basename(base_raster_path)}''')
+                task_name='wgs84 project %s' % os.path.basename(
+                    base_raster_path))
 
-            mosaic_complete_token_path = f'''{
-                os.path.splitext(target_wgs84_raster_path)[0]}.MOSAICKED'''
+            mosaic_complete_token_path = '%s.MOSAICKED' % (
+                os.path.splitext(target_wgs84_raster_path))
             mosiac_task = task_graph.add_task(
                 func=mosaic_base_into_target,
                 args=(
@@ -133,21 +132,21 @@ def main():
                 target_path_list=[mosaic_complete_token_path],
                 dependent_task_list=(
                     [wgs84_project_task]+previous_project_task_list),
-                task_name=f'''mosiac {
-                    os.path.basename(target_wgs84_raster_path)}''')
+                task_name='mosiac %s' % (
+                    os.path.basename(target_wgs84_raster_path)))
             # this ensures that a mosiac will happen one at a time
             previous_project_task_list = [mosiac_task]
 
     task_graph.join()
 
     for _, base_path in global_raster_task_path_map.values():
-        target_path = f'{os.path.splitext(base_path)[0]}_compressed.tif'
-        LOGGER.info(f'starting {base_path} to {target_path}')
+        target_path = '%s_compressed.tif' % os.path.splitext(base_path)[0]
+        LOGGER.info('starting %s to %s' % (base_path, target_path))
         task_graph.add_task(
             func=compress_to,
             args=(base_path, 'near', target_path),
             target_path_list=[target_path],
-            task_name=f'''compress {base_path}''')
+            task_name='compress %s' % base_path)
 
     task_graph.join()
     task_graph.close()
@@ -165,7 +164,7 @@ def compress_to(base_raster_path, resample_method, target_path):
     base_raster = None
     min_dimension = min(
         pygeoprocessing.get_raster_info(target_path)['raster_size'])
-    LOGGER.info(f"min min_dimension {min_dimension}")
+    LOGGER.info("min min_dimension %s" % min_dimension)
     raster_copy = gdal.OpenEx(target_path, gdal.OF_RASTER)
 
     overview_levels = []
@@ -175,11 +174,11 @@ def compress_to(base_raster_path, resample_method, target_path):
             break
         overview_levels.append(current_level)
         current_level *= 2
-    LOGGER.info(f'level list: {overview_levels}')
+    LOGGER.info('level list: %s' % overview_levels)
     gdal.SetConfigOption('COMPRESS_OVERVIEW', 'LZW')
     raster_copy.BuildOverviews(
         resample_method, overview_levels, callback=_make_logger_callback(
-            f'build overview for {os.path.basename(target_path)} '
+            'build overview for ' + os.path.basename(target_path) +
             '%.2f%% complete'))
 
 
@@ -274,7 +273,7 @@ def make_empty_wgs84_raster(
     target_raster.SetGeoTransform(geotransform)
     target_band = target_raster.GetRasterBand(1)
     target_band.SetNoDataValue(nodata_value)
-    LOGGER.debug(f"filling {target_raster_path} with {nodata_value}")
+    LOGGER.debug("filling %s with %s" % (target_raster_path, nodata_value))
     target_band.Fill(nodata_value)
     target_band.FlushCache()
     target_band = None
