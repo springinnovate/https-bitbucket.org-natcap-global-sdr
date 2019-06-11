@@ -55,7 +55,7 @@ def main():
     LOGGER.debug("gathering directory list from %s", BASE_RASTER_DIR)
     leaf_directory_list = (
         (dirpath, filenames) for (dirpath, dirnames, filenames) in os.walk(
-            BASE_RASTER_DIR))
+            BASE_RASTER_DIR) if 'intermediate_outputs' in dirnames)
 
     # peek at first element
     sample_dirpath, sample_filenames = next(leaf_directory_list)
@@ -92,7 +92,7 @@ def main():
         previous_project_task_list = []
         leaf_directory_list = (
             (dirpath, filenames) for (dirpath, dirnames, filenames) in os.walk(
-                BASE_RASTER_DIR))
+                BASE_RASTER_DIR) if 'intermediate_outputs' in dirnames)
         for dirpath, filenames in leaf_directory_list:
             try:
                 base_raster_path = next(iter(
