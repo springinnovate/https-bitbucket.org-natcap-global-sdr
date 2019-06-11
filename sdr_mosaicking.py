@@ -55,7 +55,7 @@ def main():
     LOGGER.debug("gathering directory list from %s", BASE_RASTER_DIR)
     leaf_directory_list = (
         (dirpath, filenames) for (dirpath, dirnames, filenames) in os.walk(
-            BASE_RASTER_DIR) if not dirnames)
+            BASE_RASTER_DIR))
 
     # peek at first element
     sample_dirpath, sample_filenames = next(leaf_directory_list)
