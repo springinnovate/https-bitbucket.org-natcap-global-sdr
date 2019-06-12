@@ -97,7 +97,7 @@ def main():
             try:
                 base_raster_path = next(iter(
                     (os.path.join(dirpath, filename)
-                     for filename in sample_filenames
+                     for filename in filenames
                      if re.match(RASTER_PATTERN_TO_AGGREGATE, filename))))
             except StopIteration:
                 raise RuntimeError(
