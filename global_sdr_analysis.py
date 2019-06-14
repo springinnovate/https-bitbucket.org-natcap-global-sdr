@@ -26,7 +26,10 @@ WORKSPACE_DIR = 'workspace_global_sdr_dir'
 CHURN_DIR = os.path.join(WORKSPACE_DIR, 'churn')
 ECOSHARD_DIR = os.path.join(CHURN_DIR, 'ecoshards')
 SDR_WORKSPACES_DIR = os.path.join(WORKSPACE_DIR, 'sdr_workspaces')
-
+MOSAIC_DEGREE_CELL_SIZE = 300.0 / 110570
+_WGS84_SRS = osr.SpatialReference()
+_WGS84_SRS.ImportFromEPSG(4326)
+WSGS84_WKT = _WGS84_SRS.ExportToWkt()
 DEM_TARGET_NODATA = -32768
 
 N_CPUS = multiprocessing.cpu_count()
@@ -41,8 +44,8 @@ logging.basicConfig(
     stream=sys.stdout)
 LOGGER = logging.getLogger(__name__)
 
-EROSIVITY_URL = r'https://storage.googleapis.com/global-invest-sdr-data/erosivity_CIAT_50km_md5_8e0d84d5736d118e111b8ee0ded65358.tif'
-ERODIBILITY_URL = r'https://storage.googleapis.com/global-invest-sdr-data/erodibility_globe_ISRIC_30arcseconds_md5_e3f8961b77539b686deb9a3d04ee4ce3.tif'
+EROSIVITY_URL = r'https://storage.googleapis.com/ecoshard-root/GlobalR_NoPol_compressed_md5_ab6d34ca8827daa3fda42a96b6190ecc.tif'
+ERODIBILITY_URL = r'https://storage.googleapis.com/ecoshard-root/pasquale/Kfac_SoilGrid1km_GloSEM_v1.1_md5_e1c74b67ad7fdaf6f69f1f722a5c7dfb.tif'
 LULC_URL = r'https://storage.googleapis.com/ipbes-ndr-ecoshard-data/ESACCI-LC-L4-LCCS-Map-300m-P1Y-2015-v2.0.7_md5_1254d25f937e6d9bdee5779d377c5aa4.tif'
 DEM_URL = r'https://storage.googleapis.com/global-invest-sdr-data/global_dem_3s_md5_22d0c3809af491fa09d03002bdf09748.zip'
 WATERSHEDS_URL = r'https://storage.googleapis.com/global-invest-sdr-data/watersheds_globe_HydroSHEDS_15arcseconds_md5_c6acf2762123bbd5de605358e733a304.zip'
@@ -247,6 +250,104 @@ def main():
     task_graph.join()
 
 
+def mosaic_watersheds(task_graph, workspace_dir, base_raster_dir, raster_name):
+    """Entry point."""
+    try:
+        os.makedirs(workspace_dir)
+    except OSError:
+        pass
+
+    LOGGER.debug("gathering directory list from %s", base_raster_dir)
+    leaf_directory_list = (
+        (dirpath, filenames) for (dirpath, dirnames, filenames) in os.walk(
+            base_raster_dir) if 'intermediate_outputs' in dirnames)
+
+    raster_pattern_to_aggregate = '%s_.*\.tif' % raster_name
+    # peek at first element
+    sample_dirpath, sample_filenames = next(leaf_directory_list)
+
+    try:
+        base_raster_path = next(iter(
+            (os.path.join(sample_dirpath, filename)
+             for filename in sample_filenames
+             if re.match(raster_pattern_to_aggregate, filename))))
+    except StopIteration:
+        raise ValueError(
+            "Expected to find %s in %s but not found" % (
+                raster_pattern_to_aggregate, sample_dirpath))
+
+    base_raster_info = pygeoprocessing.get_raster_info(base_raster_path)
+    target_raster_path = os.path.join(workspace_dir, '%s.tif' % raster_name)
+    target_token_complete_path = '%s_%s.TOKEN' % (
+        os.path.splitext(target_raster_path)[0], MOSAIC_DEGREE_CELL_SIZE)
+    LOGGER.debug(target_raster_path)
+    make_empty_raster_task = task_graph.add_task(
+        func=make_empty_wgs84_raster,
+        args=(
+            MOSAIC_DEGREE_CELL_SIZE, base_raster_info['nodata'][0],
+            base_raster_info['datatype'], target_raster_path,
+            target_token_complete_path),
+        ignore_path_list=[target_raster_path],
+        target_path_list=[target_token_complete_path],
+        task_name='create empty global %s' % raster_name)
+    LOGGER.info("found all the raster suffixes in %s", sample_dirpath)
+
+    leaf_directory_list = (
+        (dirpath, filenames) for (dirpath, dirnames, filenames) in os.walk(
+            base_raster_dir) if 'intermediate_outputs' in dirnames)
+    for dirpath, filenames in leaf_directory_list:
+        try:
+            base_raster_path = next(iter(
+                (os.path.join(dirpath, filename)
+                 for filename in filenames
+                 if re.match(raster_pattern_to_aggregate, filename))))
+        except StopIteration:
+            raise RuntimeError(
+                "Expected to find %s in %s but not found %s" % (
+                    raster_pattern_to_aggregate, dirpath, (
+                        dirpath, filenames)))
+
+        target_wgs84_raster_path = '%s_wgs84.tif' % os.path.splitext(
+            base_raster_path)[0]
+        wgs84_project_task = task_graph.add_task(
+            func=pygeoprocessing.warp_raster,
+            args=(
+                base_raster_path,
+                (MOSAIC_DEGREE_CELL_SIZE, -MOSAIC_DEGREE_CELL_SIZE),
+                target_wgs84_raster_path, 'near'),
+            kwargs={'target_sr_wkt': WSGS84_WKT},
+            target_path_list=[target_wgs84_raster_path],
+            dependent_task_list=[make_empty_raster_task],
+            task_name='wgs84 project %s' % os.path.basename(
+                base_raster_path))
+
+        mosaic_complete_token_path = '%s.MOSAICKED' % (
+            os.path.splitext(target_wgs84_raster_path)[0])
+        mosiac_task = task_graph.add_task(
+            func=mosaic_base_into_target,
+            args=(
+                target_wgs84_raster_path, target_raster_path,
+                mosaic_complete_token_path),
+            ignore_path_list=[target_raster_path],
+            target_path_list=[mosaic_complete_token_path],
+            dependent_task_list=[wgs84_project_task],
+            task_name='mosiac %s' % (
+                os.path.basename(target_wgs84_raster_path)))
+        # this ensures that a mosiac will happen one at a time
+
+    target_compressed_path = '%s_compressed.tif' % os.path.splitext(
+        target_raster_path)[0]
+    task_graph.add_task(
+        func=compress_to,
+        args=(target_raster_path, 'near', target_compressed_path),
+        target_path_list=[target_compressed_path],
+        dependent_task_list=[mosiac_task],
+        task_name='compress %s' % target_raster_path)
+
+    task_graph.join()
+    task_graph.close()
+
+
 def download_validate_and_unzip(url, target_dir, token_file):
     """Download url to target and write a token file when it unzips."""
     target_path = os.path.join(target_dir, os.path.basename(url))
@@ -416,6 +517,58 @@ def length_of_degree(lat):
     return max(latlen, longlen)
 
 
+def make_empty_wgs84_raster(
+        cell_size, nodata_value, target_datatype, target_raster_path,
+        target_token_complete_path):
+    """Make a big empty raster in WGS84 projection.
+
+    Parameters:
+        cell_size (float): this is the desired cell size in WSG84 degree
+            units.
+        nodata_value (float): desired nodata avlue of target raster
+        target_datatype (gdal enumerated type): desired target datatype.
+        target_raster_path (str): this is the target raster that will cover
+            [-180, 180), [90, -90) with cell size units with y direction being
+            negative.
+        target_token_complete_path (str): this file is created if the
+            mosaic to target is successful. Useful for taskgraph task
+            scheduling.
+
+    Returns:
+        None.
+
+    """
+    gtiff_driver = gdal.GetDriverByName('GTiff')
+    try:
+        os.makedirs(os.path.dirname(target_raster_path))
+    except OSError:
+        pass
+
+    n_cols = int(360.0 / cell_size)
+    n_rows = int(180.0 / cell_size)
+
+    geotransform = (-180.0, cell_size, 0.0, 90.0, 0, -cell_size)
+
+    target_raster = gtiff_driver.Create(
+        target_raster_path, n_cols, n_rows, 1, target_datatype,
+        options=(
+            'TILED=YES', 'BIGTIFF=YES', 'BLOCKXSIZE=256', 'BLOCKYSIZE=256'))
+    target_raster.SetProjection(WSGS84_WKT)
+    target_raster.SetGeoTransform(geotransform)
+    target_band = target_raster.GetRasterBand(1)
+    target_band.SetNoDataValue(nodata_value)
+    LOGGER.debug("filling %s with %s" % (target_raster_path, nodata_value))
+    target_band.Fill(nodata_value)
+    target_band.FlushCache()
+    target_band = None
+    target_raster = None
+
+    target_raster = gdal.OpenEx(target_raster_path, gdal.OF_RASTER)
+    if target_raster:
+        with open(target_token_complete_path, 'w') as target_token_file:
+            target_token_file.write('complete!')
+
+
 def make_local_watershed(
         watershed_path, watershed_fid, epsg_code,
         local_watershed_vector_path):
@@ -469,6 +622,87 @@ def make_local_watershed(
     watershed_feature = None
     local_watershed_layer = None
     local_watershed_vector = None
+
+
+def mosaic_base_into_target(
+        base_raster_path, target_raster_path, target_token_complete_path):
+    """Copy valid parts of base to target w/r/t correct georeference.
+
+    Parameters:
+        base_raster_path (str): a raster with the same cell size,
+            coordinate system, and nodata as `target_raster_path`.
+        target_raster_path (str): a raster that already exists on disk that
+            after this call will contain the non-nodata parts of
+            `base_raster_path` that geographically overlap with the target.
+        target_token_complete_path (str): this file is created if the
+            mosaic to target is successful. Useful for taskgraph task
+            scheduling.
+
+    Returns:
+        None.
+
+    """
+    target_raster = gdal.OpenEx(
+        target_raster_path, gdal.OF_RASTER | gdal.GA_Update)
+    target_band = target_raster.GetRasterBand(1)
+    target_raster_info = pygeoprocessing.get_raster_info(target_raster_path)
+    target_nodata = target_raster_info['nodata'][0]
+    base_raster_info = pygeoprocessing.get_raster_info(base_raster_path)
+    target_gt = target_raster_info['geotransform']
+    base_gt = base_raster_info['geotransform']
+
+    target_x_off = int((base_gt[0] - target_gt[0]) / target_gt[1])
+    target_y_off = int((base_gt[3] - target_gt[3]) / target_gt[5])
+
+    for offset_dict, band_data in pygeoprocessing.iterblocks(
+            (base_raster_path, 1)):
+        target_block = target_band.ReadAsArray(
+            xoff=offset_dict['xoff']+target_x_off,
+            yoff=offset_dict['yoff']+target_y_off,
+            win_xsize=offset_dict['win_xsize'],
+            win_ysize=offset_dict['win_ysize'])
+        valid_mask = numpy.isclose(target_block, target_nodata)
+        target_block[valid_mask] = band_data[valid_mask]
+        target_band.WriteArray(
+            target_block,
+            xoff=offset_dict['xoff']+target_x_off,
+            yoff=offset_dict['yoff']+target_y_off)
+    target_band.FlushCache()
+    target_band = None
+    target_raster = None
+
+    with open(target_token_complete_path, 'w') as token_file:
+        token_file.write('complete!')
+
+
+def compress_to(base_raster_path, resample_method, target_path):
+    """Compress base to target using resample method for overviews."""
+    gtiff_driver = gdal.GetDriverByName('GTiff')
+    base_raster = gdal.OpenEx(base_raster_path, gdal.OF_RASTER)
+    LOGGER.info('compress %s to %s' % (base_raster_path, target_path))
+    gtiff_driver.CreateCopy(
+        target_path, base_raster, options=(
+            'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=LZW',
+            'BLOCKXSIZE=256', 'BLOCKYSIZE=256'))
+    base_raster = None
+    min_dimension = min(
+        pygeoprocessing.get_raster_info(target_path)['raster_size'])
+    LOGGER.info("min min_dimension %s" % min_dimension)
+    raster_copy = gdal.OpenEx(target_path, gdal.OF_RASTER)
+
+    overview_levels = []
+    current_level = 2
+    while True:
+        if min_dimension // current_level == 0:
+            break
+        overview_levels.append(current_level)
+        current_level *= 2
+    LOGGER.info('level list: %s' % overview_levels)
+    gdal.SetConfigOption('COMPRESS_OVERVIEW', 'LZW')
+    raster_copy.BuildOverviews(
+        resample_method, overview_levels, callback=_make_logger_callback(
+            'build overview for ' + os.path.basename(target_path) +
+            '%.2f%% complete'))
 
 
 if __name__ == '__main__':
