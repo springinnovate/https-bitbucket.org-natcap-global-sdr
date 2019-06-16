@@ -12,7 +12,7 @@ import zipfile
 import logging
 import sys
 
-import natcap.invest.sdr
+import natcap.invest.sdr.sdr
 from osgeo import ogr
 from osgeo import gdal
 from osgeo import osr
@@ -34,7 +34,7 @@ DEM_TARGET_NODATA = -32768
 
 N_CPUS = multiprocessing.cpu_count()
 TASKGRAPH_REPORTING_FREQUENCY = 5.0
-LOGGING_LEVEL = logging.INFO
+LOGGING_LEVEL = logging.DEBUG
 
 logging.basicConfig(
     level=LOGGING_LEVEL,
@@ -238,7 +238,7 @@ def main():
             }
             LOGGER.debug('adding %s', ws_prefix)
             task_graph.add_task(
-                func=natcap.invest.sdr.execute,
+                func=natcap.invest.sdr.sdr.execute,
                 args=(sdr_args,),
                 target_path_list=[os.path.join(
                     local_workspace_dir,
