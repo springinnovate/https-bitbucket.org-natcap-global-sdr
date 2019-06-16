@@ -129,7 +129,7 @@ def main():
         target_path_list=[dem_vrt_token_path],
         task_name='make dem vrt')
     scheduled_watershed_prefixes = set()
-    make_dem_task.join()
+    task_graph.join()
     fetch_watersheds_task.join()
     LOGGER.debug('iterating over hydrosheds')
     for watershed_path in glob.glob(os.path.join(
