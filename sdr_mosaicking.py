@@ -64,7 +64,8 @@ def main():
         base_raster_path = next(iter(
             (os.path.join(sample_dirpath, filename)
              for filename in sample_filenames
-             if re.match(RASTER_PATTERN_TO_AGGREGATE, filename))))
+             if re.match(RASTER_PATTERN_TO_AGGREGATE, filename) and
+             'wsg84' not in filename)))
     except StopIteration:
         raise ValueError(
             "Expected to find %s in %s but not found" % (
