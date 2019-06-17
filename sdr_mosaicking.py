@@ -32,7 +32,8 @@ BASE_RASTER_DIR = os.path.join(
 
 # degree is 110570 at the Equator and we want 300m pixels
 MOSAIC_DEGREE_CELL_SIZE = 300.0 / 110570
-RASTER_PATTERN_TO_AGGREGATE = '%s_.*\.tif' % sys.argv[1]
+RASTER_NAME = sys.argv[1]
+RASTER_PATTERN_TO_AGGREGATE = '%s_.*\.tif' % RASTER_NAME
 
 _WGS84_SRS = osr.SpatialReference()
 _WGS84_SRS.ImportFromEPSG(4326)
