@@ -65,7 +65,7 @@ def main():
             (os.path.join(sample_dirpath, filename)
              for filename in sample_filenames
              if re.match(RASTER_PATTERN_TO_AGGREGATE, filename) and
-             'wsg84' not in filename)))
+             'wgs84' not in filename)))
     except StopIteration:
         raise ValueError(
             "Expected to find %s in %s but not found" % (
@@ -100,7 +100,7 @@ def main():
                     (os.path.join(dirpath, filename)
                      for filename in filenames
                      if re.match(RASTER_PATTERN_TO_AGGREGATE, filename)
-                     and 'wsg84' not in filename)))
+                     and 'wgs84' not in filename)))
             except StopIteration:
                 raise RuntimeError(
                     "Expected to find %s in %s but not found %s" % (
