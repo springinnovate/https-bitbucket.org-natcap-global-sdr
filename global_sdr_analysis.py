@@ -12,7 +12,7 @@ import zipfile
 import logging
 import sys
 
-import natcap.invest.sdr.sdr
+import natcap.invest.sdr
 from osgeo import ogr
 from osgeo import gdal
 from osgeo import osr
@@ -238,7 +238,7 @@ def main():
             }
             LOGGER.debug('adding %s', ws_prefix)
             task_graph.add_task(
-                func=natcap.invest.sdr.sdr.execute,
+                func=natcap.invest.sdr.execute,
                 args=(sdr_args,),
                 target_path_list=[os.path.join(
                     local_workspace_dir,
