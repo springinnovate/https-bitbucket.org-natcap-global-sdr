@@ -243,7 +243,7 @@ def main():
                 args=(sdr_args,),
                 target_path_list=[os.path.join(
                     local_workspace_dir,
-                    'watershed_results_sdr_%s.shp' % ws_prefix)],
+                    'sed_export_%s.tif' % ws_prefix)],
                 dependent_task_list=[pre_align_task],
                 task_name='sdr for %s' % ws_prefix)
 
