@@ -2,7 +2,7 @@
 import multiprocessing
 import math
 import glob
-import urllib
+import urllib.request
 import shutil
 import re
 import hashlib
@@ -383,7 +383,7 @@ def url_fetch_and_validate(url, target_path):
 def url_fetcher(url, path):
     """Download `url` to `path`."""
     LOGGER.info('fetching %s' % path)
-    response = urllib.urlopen(url)
+    response = urllib.request.urlopen(url)
     with open(path, 'wb') as out_file:
         shutil.copyfileobj(response, out_file)
     response.close()
