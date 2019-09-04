@@ -229,6 +229,7 @@ def main():
                 'watersheds_path': local_watershed_vector_path,
                 'biophysical_table_path': biophysical_table_path,
                 'threshold_flow_accumulation': 1000,
+                'biophysical_table_lucode_header_id': 'ID',
                 'k_param': '2',
                 'sdr_max': '0.8',
                 'ic_0_param': '0.5',
