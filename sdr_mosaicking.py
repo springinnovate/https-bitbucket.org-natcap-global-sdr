@@ -155,9 +155,18 @@ def main():
     task_graph.close()
 
 
-def compress_to(base_raster_path, resample_method):
+def compress_to(base_raster_path, resample_method, target_path):
     """Compress base to target using resample method for overviews."""
     raster = gdal.OpenEx(base_raster_path, gdal.OF_RASTER)
+    driver = raster.GetDriver()
+    raster_copy = driver.CreateCopy(target_path, raster, options=(
+        'TILED=YES', 'BIGTIFF=YES', 'COMPRESS=ZSTD', 'BLOCKXSIZE=256',
+        'BLOCKYSIZE=256'))
+    raster_copy = None
+    raster = None
+    # open in read-only mode
+    raster_copy = gdal.OpenEx(target_path, gdal.OF_RASTER)
+
     min_dimension = min(
         pygeoprocessing.get_raster_info(base_raster_path)['raster_size'])
     LOGGER.info("min min_dimension %s" % min_dimension)
@@ -170,8 +179,8 @@ def compress_to(base_raster_path, resample_method):
         overview_levels.append(current_level)
         current_level *= 2
     LOGGER.info('level list: %s' % overview_levels)
-    gdal.SetConfigOption('COMPRESS_OVERVIEW', 'LZW')
-    raster.BuildOverviews(
+    gdal.SetConfigOption('COMPRESS_OVERVIEW', 'ZSTD')
+    raster_copy.BuildOverviews(
         resample_method, overview_levels, callback=_make_logger_callback(
             'build overview for ' + os.path.basename(base_raster_path) +
             '%.2f%% complete'))
