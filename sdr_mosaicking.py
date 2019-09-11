@@ -26,6 +26,7 @@ logging.basicConfig(
         ' [%(funcName)s:%(lineno)d] %(message)s'),
     stream=sys.stdout)
 LOGGER = logging.getLogger(__name__)
+LOGGER.addHandler(LOGGER.FileHandler('mosaic_log.txt'))
 
 BASE_RASTER_DIR = os.path.join(
     'workspace_global_sdr_dir', 'sdr_workspaces')
