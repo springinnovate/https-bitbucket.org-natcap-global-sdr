@@ -43,6 +43,9 @@ logging.basicConfig(
         ' [%(funcName)s:%(lineno)d] %(message)s'),
     stream=sys.stdout)
 LOGGER = logging.getLogger(__name__)
+FH = logging.FileHandler('log.txt')
+FH.setLevel(logging.DEBUG)
+LOGGER.addHandler(FH)
 
 EROSIVITY_URL = r'https://storage.googleapis.com/ecoshard-root/GlobalR_NoPol_compressed_md5_ab6d34ca8827daa3fda42a96b6190ecc.tif'
 ERODIBILITY_URL = r'https://storage.googleapis.com/ecoshard-root/pasquale/Kfac_SoilGrid1km_GloSEM_v1.1_md5_e1c74b67ad7fdaf6f69f1f722a5c7dfb.tif'
