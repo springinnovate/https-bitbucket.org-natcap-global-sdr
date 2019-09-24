@@ -32,7 +32,7 @@ _WGS84_SRS.ImportFromEPSG(4326)
 WSGS84_WKT = _WGS84_SRS.ExportToWkt()
 DEM_TARGET_NODATA = -32768
 
-N_CPUS = multiprocessing.cpu_count()
+N_CPUS = int(sys.argv[1])
 TASKGRAPH_REPORTING_FREQUENCY = 5.0
 LOGGING_LEVEL = logging.DEBUG
 
