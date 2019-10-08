@@ -138,6 +138,8 @@ def main():
     for watershed_path in glob.glob(os.path.join(
             ECOSHARD_DIR, 'watersheds_globe_HydroSHEDS_15arcseconds',
             '*.shp')):
+        if 'af_bas_15s' not in watershed_path:
+            continue
         LOGGER.debug(watershed_path)
         watershed_basename = os.path.splitext(
             os.path.basename(watershed_path))[0]
